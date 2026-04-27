@@ -1,0 +1,34 @@
+databases:
+  - name: blood_pressure
+    databaseName: blood_pressure
+    user: blood_pressure_user
+
+services:
+  - type: web
+    name: blood-pressure-app
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PGHOST
+        fromDatabase:
+          name: blood_pressure
+          attribute: host
+      - key: PGDATABASE
+        fromDatabase:
+          name: blood_pressure
+          attribute: database
+      - key: PGUSER
+        fromDatabase:
+          name: blood_pressure
+          attribute: user
+      - key: PGPASSWORD
+        fromDatabase:
+          name: blood_pressure
+          attribute: password
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PORT
+        value: 10000
