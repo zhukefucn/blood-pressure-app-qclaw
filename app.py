@@ -1,28 +1,28 @@
 import os
-import psycopg2
+import sqlite3
 from datetime import datetime
 from flask import Flask, render_template_string, request, redirect, url_for, flash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
+DB_PATH = os.environ.get('DB_PATH', '/data/blood_pressure.db')
+
 
 def get_db_connection():
-    return psycopg2.connect(
-        host=os.environ.get('PGHOST', 'localhost'),
-        database=os.environ.get('PGDATABASE', 'blood_pressure'),
-        user=os.environ.get('PGUSER', 'postgres'),
-        password=os.environ.get('PGPASSWORD', '')
-    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db():
     try:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute('''
             CREATE TABLE IF NOT EXISTS blood_pressure (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 measure_date DATE NOT NULL,
                 measure_time TIME NOT NULL,
                 systolic INT NOT NULL,
@@ -32,9 +32,8 @@ def init_db():
             )
         ''')
         conn.commit()
-        cur.close()
         conn.close()
-        print("[init_db] Table ready.")
+        print(f"[init_db] SQLite DB ready at {DB_PATH}")
     except Exception as e:
         print(f"[init_db] Warning: {e}")
 
@@ -199,10 +198,9 @@ def index():
         cur.execute('''
             SELECT AVG(systolic), AVG(diastolic), AVG(pulse)
             FROM blood_pressure
-            WHERE measure_date >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE measure_date >= date('now', '-30 days')
         ''')
         result = cur.fetchone()
-        cur.close()
         conn.close()
     except Exception as e:
         flash(f'数据库连接失败: {e}', 'error')
@@ -220,7 +218,7 @@ def index():
     for r in records_raw:
         formatted_records.append({
             'id': r[0],
-            'measure_date': r[1].strftime('%Y-%m-%d') if hasattr(r[1], 'strftime') else str(r[1]),
+            'measure_date': str(r[1]),
             'measure_time': str(r[2])[:5] if r[2] else '',
             'systolic': r[3],
             'diastolic': r[4],
@@ -244,11 +242,10 @@ def add():
         cur = conn.cursor()
         cur.execute(
             'INSERT INTO blood_pressure (measure_date, measure_time, systolic, diastolic, pulse) '
-            'VALUES (%s, %s, %s, %s, %s)',
+            'VALUES (?, ?, ?, ?, ?)',
             (measure_date, measure_time, systolic, diastolic, pulse)
         )
         conn.commit()
-        cur.close()
         conn.close()
         flash('记录保存成功!')
     except Exception as e:
@@ -262,9 +259,8 @@ def delete(record_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute('DELETE FROM blood_pressure WHERE id = %s', (record_id,))
+        cur.execute('DELETE FROM blood_pressure WHERE id = ?', (record_id,))
         conn.commit()
-        cur.close()
         conn.close()
         flash('记录已删除')
     except Exception as e:
