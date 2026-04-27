@@ -6,6 +6,7 @@ from flask import Flask, render_template_string, request, redirect, url_for, fla
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
+
 def get_db_connection():
     return psycopg2.connect(
         host=os.environ.get('PGHOST', 'localhost'),
@@ -14,23 +15,33 @@ def get_db_connection():
         password=os.environ.get('PGPASSWORD', '')
     )
 
+
 def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS blood_pressure (
-            id SERIAL PRIMARY KEY,
-            measure_date DATE NOT NULL,
-            measure_time TIME NOT NULL,
-            systolic INT NOT NULL,
-            diastolic INT NOT NULL,
-            pulse INT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS blood_pressure (
+                id SERIAL PRIMARY KEY,
+                measure_date DATE NOT NULL,
+                measure_time TIME NOT NULL,
+                systolic INT NOT NULL,
+                diastolic INT NOT NULL,
+                pulse INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("[init_db] Table ready.")
+    except Exception as e:
+        print(f"[init_db] Warning: {e}")
+
+
+# ── 模块加载时执行 DB 初始化（gunicorn / __main__ 均兼容） ──
+init_db()
+
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -59,20 +70,21 @@ HTML_TEMPLATE = '''
         .stat-value { font-size: 24px; font-weight: bold; color: #333; }
         .stat-label { color: #666; margin-top: 5px; }
         .flash { background: #4CAF50; color: white; padding: 10px; border-radius: 4px; margin-bottom: 20px; }
+        .flash-error { background: #f44336; color: white; padding: 10px; border-radius: 4px; margin-bottom: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>血压记录</h1>
-        
-        {% with messages = get_flashed_messages() %}
+        <h1>🩺 血压记录</h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
-                {% for message in messages %}
-                    <div class="flash">{{ message }}</div>
+                {% for category, message in messages %}
+                    <div class="{{ 'flash-error' if category == 'error' else 'flash' }}">{{ message }}</div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
-        
+
         <div class="card">
             <h2>录入血压</h2>
             <form method="POST" action="/add">
@@ -103,7 +115,7 @@ HTML_TEMPLATE = '''
                 <button type="submit">保存记录</button>
             </form>
         </div>
-        
+
         {% if stats %}
         <div class="card">
             <h2>统计分析 (最近30天)</h2>
@@ -123,9 +135,10 @@ HTML_TEMPLATE = '''
             </div>
         </div>
         {% endif %}
-        
+
         <div class="card">
             <h2>历史记录</h2>
+            {% if records %}
             <table>
                 <thead>
                     <tr>
@@ -154,92 +167,112 @@ HTML_TEMPLATE = '''
                     {% endfor %}
                 </tbody>
             </table>
+            {% else %}
+            <p style="color:#999;text-align:center;padding:20px;">暂无记录，请录入第一条血压数据。</p>
+            {% endif %}
         </div>
     </div>
 </body>
 </html>
 '''
 
+
+@app.route('/health')
+def health():
+    """Render 健康检查端点"""
+    return {'status': 'ok'}, 200
+
+
 @app.route('/')
 def index():
     today = datetime.now().strftime('%Y-%m-%d')
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT id, measure_date, measure_time, systolic, diastolic, pulse FROM blood_pressure ORDER BY measure_date DESC, measure_time DESC LIMIT 100')
-    records = cur.fetchall()
-    cur.close()
-    conn.close()
-    
-    stats = None
+
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        cur.execute(
+            'SELECT id, measure_date, measure_time, systolic, diastolic, pulse '
+            'FROM blood_pressure ORDER BY measure_date DESC, measure_time DESC LIMIT 100'
+        )
+        records_raw = cur.fetchall()
+
         cur.execute('''
-            SELECT AVG(systolic), AVG(diastolic), AVG(pulse) 
-            FROM blood_pressure 
+            SELECT AVG(systolic), AVG(diastolic), AVG(pulse)
+            FROM blood_pressure
             WHERE measure_date >= CURRENT_DATE - INTERVAL '30 days'
         ''')
         result = cur.fetchone()
-        if result and result[0]:
-            stats = type('obj', (object,), {
-                'avg_systolic': result[0] or 0,
-                'avg_diastolic': result[1] or 0,
-                'avg_pulse': result[2] or 0
-            })
         cur.close()
         conn.close()
-    except:
-        pass
-    
+    except Exception as e:
+        flash(f'数据库连接失败: {e}', 'error')
+        return render_template_string(HTML_TEMPLATE, records=[], stats=None, today=today)
+
+    stats = None
+    if result and result[0]:
+        stats = type('obj', (object,), {
+            'avg_systolic': float(result[0] or 0),
+            'avg_diastolic': float(result[1] or 0),
+            'avg_pulse': float(result[2] or 0)
+        })
+
     formatted_records = []
-    for r in records:
+    for r in records_raw:
         formatted_records.append({
             'id': r[0],
             'measure_date': r[1].strftime('%Y-%m-%d') if hasattr(r[1], 'strftime') else str(r[1]),
-            'measure_time': str(r[2]) if r[2] else '',
+            'measure_time': str(r[2])[:5] if r[2] else '',
             'systolic': r[3],
             'diastolic': r[4],
             'pulse': r[5]
         })
-    
+
     return render_template_string(HTML_TEMPLATE, records=formatted_records, stats=stats, today=today)
+
 
 @app.route('/add', methods=['POST'])
 def add():
-    measure_date = request.form['measure_date']
-    measure_time = request.form['measure_time']
-    systolic = int(request.form['systolic'])
-    diastolic = int(request.form['diastolic'])
-    pulse = request.form['pulse']
-    pulse = int(pulse) if pulse else None
-    
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        'INSERT INTO blood_pressure (measure_date, measure_time, systolic, diastolic, pulse) VALUES (%s, %s, %s, %s, %s)',
-        (measure_date, measure_time, systolic, diastolic, pulse)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    flash('记录保存成功!')
+    try:
+        measure_date = request.form['measure_date']
+        measure_time = request.form['measure_time']
+        systolic = int(request.form['systolic'])
+        diastolic = int(request.form['diastolic'])
+        pulse_val = request.form.get('pulse', '').strip()
+        pulse = int(pulse_val) if pulse_val else None
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            'INSERT INTO blood_pressure (measure_date, measure_time, systolic, diastolic, pulse) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            (measure_date, measure_time, systolic, diastolic, pulse)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        flash('记录保存成功!')
+    except Exception as e:
+        flash(f'保存失败: {e}', 'error')
+
     return redirect(url_for('index'))
 
-@app.route('/delete/<int:id>', methods=['POST'])
-def delete(id):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('DELETE FROM blood_pressure WHERE id = %s', (id,))
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    flash('记录已删除')
+
+@app.route('/delete/<int:record_id>', methods=['POST'])
+def delete(record_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('DELETE FROM blood_pressure WHERE id = %s', (record_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        flash('记录已删除')
+    except Exception as e:
+        flash(f'删除失败: {e}', 'error')
+
     return redirect(url_for('index'))
+
 
 if __name__ == '__main__':
-    init_db()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
