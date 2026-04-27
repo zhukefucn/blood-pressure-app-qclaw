@@ -1,28 +1,27 @@
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from flask import Flask, render_template_string, request, redirect, url_for, flash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
-DB_PATH = os.environ.get('DB_PATH', '/data/blood_pressure.db')
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 
 def init_db():
     try:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute('''
             CREATE TABLE IF NOT EXISTS blood_pressure (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 measure_date DATE NOT NULL,
                 measure_time TIME NOT NULL,
                 systolic INT NOT NULL,
@@ -33,7 +32,7 @@ def init_db():
         ''')
         conn.commit()
         conn.close()
-        print(f"[init_db] SQLite DB ready at {DB_PATH}")
+        print("[init_db] PostgreSQL table ready")
     except Exception as e:
         print(f"[init_db] Warning: {e}")
 
@@ -188,17 +187,17 @@ def index():
 
     try:
         conn = get_db_connection()
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
-            'SELECT id, measure_date, measure_time, systolic, diastolic, pulse '
-            'FROM blood_pressure ORDER BY measure_date DESC, measure_time DESC LIMIT 100'
+            "SELECT id, measure_date, measure_time, systolic, diastolic, pulse "
+            "FROM blood_pressure ORDER BY measure_date DESC, measure_time DESC LIMIT 100"
         )
         records_raw = cur.fetchall()
 
         cur.execute('''
             SELECT AVG(systolic), AVG(diastolic), AVG(pulse)
             FROM blood_pressure
-            WHERE measure_date >= date('now', '-30 days')
+            WHERE measure_date >= CURRENT_DATE - INTERVAL '30 days'
         ''')
         result = cur.fetchone()
         conn.close()
@@ -207,22 +206,22 @@ def index():
         return render_template_string(HTML_TEMPLATE, records=[], stats=None, today=today)
 
     stats = None
-    if result and result[0]:
+    if result and result['avg']:
         stats = type('obj', (object,), {
-            'avg_systolic': float(result[0] or 0),
-            'avg_diastolic': float(result[1] or 0),
-            'avg_pulse': float(result[2] or 0)
-        })
+            'avg_systolic': float(result['avg'] or 0),
+            'avg_diastolic': float(result['avg_diastolic'] or 0) if 'avg_diastolic' in result else 0,
+            'avg_pulse': float(result['avg_pulse'] or 0) if 'avg_pulse' in result else 0
+        })()
 
     formatted_records = []
     for r in records_raw:
         formatted_records.append({
-            'id': r[0],
-            'measure_date': str(r[1]),
-            'measure_time': str(r[2])[:5] if r[2] else '',
-            'systolic': r[3],
-            'diastolic': r[4],
-            'pulse': r[5]
+            'id': r['id'],
+            'measure_date': str(r['measure_date']),
+            'measure_time': str(r['measure_time'])[:5] if r['measure_time'] else '',
+            'systolic': r['systolic'],
+            'diastolic': r['diastolic'],
+            'pulse': r['pulse']
         })
 
     return render_template_string(HTML_TEMPLATE, records=formatted_records, stats=stats, today=today)
@@ -241,8 +240,8 @@ def add():
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
-            'INSERT INTO blood_pressure (measure_date, measure_time, systolic, diastolic, pulse) '
-            'VALUES (?, ?, ?, ?, ?)',
+            "INSERT INTO blood_pressure (measure_date, measure_time, systolic, diastolic, pulse) "
+            "VALUES (%s, %s, %s, %s, %s)",
             (measure_date, measure_time, systolic, diastolic, pulse)
         )
         conn.commit()
@@ -259,7 +258,7 @@ def delete(record_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute('DELETE FROM blood_pressure WHERE id = ?', (record_id,))
+        cur.execute('DELETE FROM blood_pressure WHERE id = %s', (record_id,))
         conn.commit()
         conn.close()
         flash('记录已删除')
