@@ -5,12 +5,12 @@ databases:
 
 services:
   - type: web
-    name: blood-pressure-app
+    name: blood-pressure-app-qclaw
     env: python
-    region: singapore
+    region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PGHOST
         fromDatabase:
