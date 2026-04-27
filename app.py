@@ -195,7 +195,7 @@ def index():
         records_raw = cur.fetchall()
 
         cur.execute('''
-            SELECT AVG(systolic), AVG(diastolic), AVG(pulse)
+            SELECT AVG(systolic) AS avg_systolic, AVG(diastolic) AS avg_diastolic, AVG(pulse) AS avg_pulse
             FROM blood_pressure
             WHERE measure_date >= CURRENT_DATE - INTERVAL '30 days'
         ''')
@@ -206,11 +206,11 @@ def index():
         return render_template_string(HTML_TEMPLATE, records=[], stats=None, today=today)
 
     stats = None
-    if result and result['avg']:
+    if result and result['avg_systolic']:
         stats = type('obj', (object,), {
-            'avg_systolic': float(result['avg'] or 0),
-            'avg_diastolic': float(result['avg_diastolic'] or 0) if 'avg_diastolic' in result else 0,
-            'avg_pulse': float(result['avg_pulse'] or 0) if 'avg_pulse' in result else 0
+            'avg_systolic': float(result['avg_systolic'] or 0),
+            'avg_diastolic': float(result['avg_diastolic'] or 0),
+            'avg_pulse': float(result['avg_pulse'] or 0)
         })()
 
     formatted_records = []
